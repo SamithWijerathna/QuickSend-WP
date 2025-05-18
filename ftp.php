@@ -3,7 +3,7 @@
  * Plugin Name: FTP/SFTP File Transfer
  * Description: A plugin to list, search and select multiple files from your entire WordPress installation and transfer them via FTP or SFTP to a remote server with real-time progress and speed.
  * Version: 1.9.3
- * Author: Samith (Fixed by Claude)
+ * Author: Samith
  * Author URI: https://www.samithwijerathna.com
  * License: GPL2
  */
