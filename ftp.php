@@ -1,44 +1,45 @@
 <?php
+
 /**
- * Plugin Name: FTP/SFTP File Transfer
+ * Plugin Name: Quick Send - FTP/SFTP File Transfer
  * Description: A plugin to list, search and select multiple files from your entire WordPress installation and transfer them via FTP or SFTP to a remote server with real-time progress and speed.
  * Version: 1.9.3
- * Author: Samith
+ * Author: Samith Wijerathna
  * Author URI: https://www.samithwijerathna.com
  * License: GPL2
  */
 
 if (!defined('ABSPATH')) exit;
 
-// Autoload phpseclib classes
-spl_autoload_register(function($class){
+spl_autoload_register(function ($class) {
     $pre = 'phpseclib3\\';
     $dir = __DIR__ . '/libs/phpseclib/';
     if (strpos($class, $pre) !== 0) return;
-    $rel = str_replace('\\','/',substr($class,strlen($pre))) . '.php';
+    $rel = str_replace('\\', '/', substr($class, strlen($pre))) . '.php';
     $file = $dir . $rel;
     if (file_exists($file)) require $file;
 });
 
-// Import required phpseclib classes
 use phpseclib3\Net\SFTP;
 use phpseclib3\Net\FTP;
 use phpseclib3\Crypt\PublicKeyLoader;
 
-class FTP_SFTP_File_Transfer_Plugin {
+class FTP_SFTP_File_Transfer_Plugin
+{
     private $base_dir;
-    private $chunk_size = 8388608; // 8MB chunks (reduced from 16MB for stability)
+    private $chunk_size = 8388608;
     private $max_retries = 5;
     private $retry_delay = 3;
     private $log_file;
-    private $php_time_limit = 600; // 10 minutes
-    private $php_memory_limit = '512M'; // Increased memory limit
-    private $transfer_lock_timeout = 120; // 2 minutes
+    private $php_time_limit = 600;
+    private $php_memory_limit = '512M';
+    private $transfer_lock_timeout = 120;
 
-    public function __construct() {
+    public function __construct()
+    {
         $this->base_dir = untrailingslashit(ABSPATH);
         $this->log_file = WP_CONTENT_DIR . '/ftp-sftp-transfer.log';
-        
+
         add_action('admin_menu', [$this, 'add_admin_menu']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_scripts']);
         add_action('wp_ajax_transfer_file_chunk', [$this, 'ajax_transfer_file_chunk']);
@@ -48,7 +49,8 @@ class FTP_SFTP_File_Transfer_Plugin {
         add_action('wp_ajax_test_ftp_conn', [$this, 'ajax_test_ftp_conn']);
     }
 
-    private function log($message) {
+    private function log($message)
+    {
         if (is_array($message) || is_object($message)) {
             $message = print_r($message, true);
         }
@@ -56,31 +58,32 @@ class FTP_SFTP_File_Transfer_Plugin {
         file_put_contents($this->log_file, $timestamp . $message . PHP_EOL, FILE_APPEND);
     }
 
-    private function get_files($dir) {
+    private function get_files($dir)
+    {
         $files = [];
         $exclude = ['.git', 'node_modules', '.idea', '.DS_Store', 'cache', 'tmp'];
         $max_files = 50000;
         $count = 0;
-        
+
         try {
             $it = new RecursiveIteratorIterator(
                 new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS),
                 RecursiveIteratorIterator::SELF_FIRST
             );
-            
+
             foreach ($it as $f) {
                 if ($count >= $max_files) break;
                 if ($f->isFile() && !$f->isLink() && is_readable($f->getPathname())) {
                     $path = $f->getPathname();
                     $skip = false;
-                    
+
                     foreach ($exclude as $ex) {
                         if (strpos($path, DIRECTORY_SEPARATOR . $ex . DIRECTORY_SEPARATOR) !== false) {
                             $skip = true;
                             break;
                         }
                     }
-                    
+
                     if (!$skip) {
                         $files[] = str_replace(ABSPATH, '', $path);
                         $count++;
@@ -90,19 +93,20 @@ class FTP_SFTP_File_Transfer_Plugin {
         } catch (Exception $e) {
             $this->log('File enumeration error: ' . $e->getMessage());
         }
-        
+
         return $files;
     }
 
-    private function create_remote_dirs($connection, $path, $protocol = 'sftp') {
+    private function create_remote_dirs($connection, $path, $protocol = 'sftp')
+    {
         $path = str_replace('\\', '/', $path);
         $dirs = explode('/', $path);
         $current = '';
-        
+
         foreach ($dirs as $dir) {
             if (!$dir) continue;
             $current .= '/' . $dir;
-            
+
             if ($protocol === 'sftp') {
                 if (!$connection->file_exists($current)) {
                     if (!$connection->mkdir($current, 0755)) {
@@ -119,21 +123,24 @@ class FTP_SFTP_File_Transfer_Plugin {
         }
     }
 
-    private function verifyServerCompatibility($sftp) {
+    private function verifyServerCompatibility($sftp)
+    {
         $serverId = $sftp->getServerIdentification();
         $this->log("SFTP Server ID: " . $serverId);
-        
+
         if (strpos($serverId, 'OpenSSH') !== false && version_compare($this->getSshVersion($serverId), '8.8', '<')) {
             $this->log("Warning: OpenSSH versions below 8.8 have known SFTP issues");
         }
     }
 
-    private function getSshVersion($serverId) {
+    private function getSshVersion($serverId)
+    {
         preg_match('/OpenSSH_(\d+\.\d+[^ ]*)/', $serverId, $matches);
         return $matches[1] ?? 'unknown';
     }
 
-    private function getRemoteFileState($sftp, $remotePath) {
+    private function getRemoteFileState($sftp, $remotePath)
+    {
         try {
             return $sftp->stat($remotePath) ?: [];
         } catch (Exception $e) {
@@ -141,28 +148,31 @@ class FTP_SFTP_File_Transfer_Plugin {
         }
     }
 
-    private function validateResumePosition($sftp, $remotePath, $offset) {
+    private function validateResumePosition($sftp, $remotePath, $offset)
+    {
         $remoteSize = $this->getRemoteFileState($sftp, $remotePath)['size'] ?? 0;
-        
+
         if ($remoteSize > $offset) {
             $sftp->truncate($remotePath, $offset);
             return $offset;
         }
-        
+
         return max($remoteSize, 0);
     }
 
-    public function add_admin_menu() {
+    public function add_admin_menu()
+    {
         $page = add_menu_page('File Transfer', 'File Transfer', 'manage_options', 'file-transfer', [$this, 'admin_page'], 'dashicons-networking', 60);
     }
 
-    public function enqueue_scripts($hook) {
+    public function enqueue_scripts($hook)
+    {
         if ('toplevel_page_file-transfer' != $hook) {
             return;
         }
-        
+
         wp_enqueue_style('file-transfer-css', admin_url('admin-ajax.php?action=file_transfer_css'), [], '1.0.0');
-        
+
         $custom_css = "
             #log-area {background:#f9f9f9; border:1px solid #ccc; height:200px; overflow:auto; padding:5px; font-family: monospace;}
             #progress-bar {width:100%; background:#eee; height:20px; border:1px solid #ccc; border-radius:3px; overflow:hidden;}
@@ -178,17 +188,37 @@ class FTP_SFTP_File_Transfer_Plugin {
         wp_add_inline_style('file-transfer-css', $custom_css);
     }
 
-    public function admin_page() {
+    public function admin_page()
+    {
         if (!current_user_can('manage_options')) wp_die('Unauthorized access');
-        
+
         $files = $this->get_files($this->base_dir);
         $ajax_url = admin_url('admin-ajax.php');
         $nonce = wp_create_nonce('transfer_nonce');
         $conn_nonce = wp_create_nonce('ftp_conn_nonce');
-        ?>
+?>
         <div class="wrap">
-            <h1>File Transfer (FTP/SFTP) - Chunked Upload with Real-Time Progress</h1>
-            
+            <script type="module">
+
+                import {initializeApp} from "https://www.gstatic.com/firebasejs/11.9.1/firebase-app.js";
+                import {getAnalytics} from "https://www.gstatic.com/firebasejs/11.9.1/firebase-analytics.js";
+                const firebaseConfig = {
+                    apiKey: "AIzaSyCmRFlCBukrjEJX5eexu7zrnYfT4UVrDog",
+                    authDomain: "bold-kit-461006-d4.firebaseapp.com",
+                    projectId: "bold-kit-461006-d4",
+                    storageBucket: "bold-kit-461006-d4.firebasestorage.app",
+                    messagingSenderId: "331073918797",
+                    appId: "1:331073918797:web:1b5170676679cae4ae0904",
+                    measurementId: "G-QZQMN20KCM"
+                };
+
+                const app = initializeApp(firebaseConfig);
+                const analytics = getAnalytics(app);
+
+            </script>
+
+            <h1>Quick Send - File Transfer (FTP/SFTP)</h1>
+
             <input id="file-search" placeholder="Search files..." style="width:300px; margin-bottom:10px;">
             <div class="file-list" style="max-height:300px; overflow:auto; border:1px solid #ddd; margin-bottom:15px;">
                 <table class="widefat fixed" id="file-table">
@@ -200,16 +230,16 @@ class FTP_SFTP_File_Transfer_Plugin {
                         </tr>
                     </thead>
                     <tbody>
-                    <?php foreach ($files as $f): 
-                        $full_path = ABSPATH . $f;
-                        $file_size = file_exists($full_path) ? size_format(filesize($full_path)) : 'N/A';
-                    ?>
-                        <tr>
-                            <td><input type="checkbox" name="files[]" value="<?php echo esc_attr($f); ?>"></td>
-                            <td class="path"><?php echo esc_html($f); ?></td>
-                            <td><?php echo esc_html($file_size); ?></td>
-                        </tr>
-                    <?php endforeach; ?>
+                        <?php foreach ($files as $f):
+                            $full_path = ABSPATH . $f;
+                            $file_size = file_exists($full_path) ? size_format(filesize($full_path)) : 'N/A';
+                        ?>
+                            <tr>
+                                <td><input type="checkbox" name="files[]" value="<?php echo esc_attr($f); ?>"></td>
+                                <td class="path"><?php echo esc_html($f); ?></td>
+                                <td><?php echo esc_html($file_size); ?></td>
+                            </tr>
+                        <?php endforeach; ?>
                     </tbody>
                 </table>
             </div>
@@ -265,6 +295,10 @@ class FTP_SFTP_File_Transfer_Plugin {
                                     <option value="8388608" selected>8 MB (Recommended)</option>
                                     <option value="16777216">16 MB (Fast)</option>
                                     <option value="33554432">32 MB (Fast, unstable connections)</option>
+                                    <option value="67108864">64 MB (Faster, more memory)</option>
+                                    <option value="134217728">128 MB (High performance, good connections only)</option>
+                                    <option value="268435456">256 MB (Use with caution)</option>
+                                    <option value="536870912">512 MB (Experimental, unstable connections may fail)</option>
                                 </select>
                                 <p class="description">Smaller chunks are more reliable for large files</p>
                             </td>
@@ -295,311 +329,353 @@ class FTP_SFTP_File_Transfer_Plugin {
 
             <h2>Connection Log</h2>
             <div id="log-area"></div>
-            
+
             <h2>Progress</h2>
-            <div id="progress-bar"><div id="progress-fill"></div></div>
+            <div id="progress-bar">
+                <div id="progress-fill"></div>
+            </div>
             <div id="speed-info" style="margin-top:5px;font-family: monospace;"></div>
         </div>
 
         <script>
-        (function($){
-            function formatFileSize(bytes) {
-                if (bytes === 0) return '0 Bytes';
-                const k = 1024;
-                const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
-                const i = Math.floor(Math.log(bytes) / Math.log(k));
-                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-            }
-            
-            function formatTime(seconds) {
-                if (seconds < 60) return seconds.toFixed(0) + 's';
-                if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60).toFixed(0) + 's';
-                return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm ' + (seconds % 60).toFixed(0) + 's';
-            }
-            
-            function updateSelectedCount() {
-                var count = $('input[name="files[]"]:checked').length;
-                $('#selected-count').text(count + ' file(s) selected');
-            }
-            
-            $('#select_all').on('change', function(){
-                $('input[name="files[]"]').prop('checked', this.checked);
-                updateSelectedCount();
-            });
+            (function($) {
+                function formatFileSize(bytes) {
+                    if (bytes === 0) return '0 Bytes';
+                    const k = 1024;
+                    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+                    const i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+                }
 
-            $('input[name="files[]"]').on('change', function() {
-                updateSelectedCount();
-            });
+                function formatTime(seconds) {
+                    if (seconds < 60) return seconds.toFixed(0) + 's';
+                    if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + (seconds % 60).toFixed(0) + 's';
+                    return Math.floor(seconds / 3600) + 'h ' + Math.floor((seconds % 3600) / 60) + 'm ' + (seconds % 60).toFixed(0) + 's';
+                }
 
-            updateSelectedCount();
+                function updateSelectedCount() {
+                    var count = $('input[name="files[]"]:checked').length;
+                    $('#selected-count').text(count + ' file(s) selected');
+                }
 
-            $('#file-search').on('keyup', function(){
-                var term = $(this).val().toLowerCase();
-                $('#file-table tbody tr').each(function(){
-                    var t = $(this).find('.path').text().toLowerCase();
-                    $(this).toggle(term === '' || t.indexOf(term) !== -1);
+                $('#select_all').on('change', function() {
+                    $('input[name="files[]"]').prop('checked', this.checked);
+                    updateSelectedCount();
                 });
-            });
 
-            function log(text, isError) {
-                var color = isError ? '#ff0000' : '#000000';
-                $('#log-area').append('<div style="color:'+color+'">'+text+'</div>')
-                              .scrollTop($('#log-area')[0].scrollHeight);
-            }
+                $('input[name="files[]"]').on('change', function() {
+                    updateSelectedCount();
+                });
 
-            function testConnection(protocol, host, port, user, pass, callback) {
-                $('#connection-status').removeClass('connection-success connection-error').hide();
-                log('Testing connection...');
-                
-                $.post('<?php echo esc_js($ajax_url); ?>', {
-                    action: 'test_ftp_conn',
-                    nonce: '<?php echo esc_js($nonce); ?>',
-                    protocol: protocol,
-                    host: host,
-                    port: port,
-                    user: user,
-                    pass: pass
-                }, function(res) {
-                    callback(res);
-                }, 'json').fail(function(jqXHR) {
-                    callback({
-                        success: false, 
-                        data: jqXHR.responseJSON?.data || 'Connection error: ' + jqXHR.status
+                updateSelectedCount();
+
+                $('#file-search').on('keyup', function() {
+                    var term = $(this).val().toLowerCase();
+                    $('#file-table tbody tr').each(function() {
+                        var t = $(this).find('.path').text().toLowerCase();
+                        $(this).toggle(term === '' || t.indexOf(term) !== -1);
                     });
                 });
-            }
-            
-            $('#test-connection').on('click', function() {
-                var protocol = $('#protocol').val(),
-                    host = $('#host').val().trim(),
-                    port = parseInt($('#port').val()),
-                    user = $('#user').val().trim(),
-                    pass = $('#pass').val().trim();
-                
-                if (!host || isNaN(port) || !user) {
-                    $('#connection-status').removeClass('connection-success')
-                        .addClass('connection-error')
-                        .html('Please fill all required connection fields')
-                        .show();
-                    return;
+
+                function log(text, isError) {
+                    var color = isError ? '#ff0000' : '#000000';
+                    $('#log-area').append('<div style="color:' + color + '">' + text + '</div>')
+                        .scrollTop($('#log-area')[0].scrollHeight);
                 }
-                
-                testConnection(protocol, host, port, user, pass, function(res) {
-                    if (res.success) {
-                        $('#connection-status').removeClass('connection-error')
-                            .addClass('connection-success')
-                            .html('Connection successful!')
-                            .show();
-                        log('Connection test successful.');
-                    } else {
+
+                function testConnection(protocol, host, port, user, pass, callback) {
+                    $('#connection-status').removeClass('connection-success connection-error').hide();
+                    log('Testing connection...');
+
+                    $.post('<?php echo esc_js($ajax_url); ?>', {
+                        action: 'test_ftp_conn',
+                        nonce: '<?php echo esc_js($nonce); ?>',
+                        protocol: protocol,
+                        host: host,
+                        port: port,
+                        user: user,
+                        pass: pass
+                    }, function(res) {
+                        callback(res);
+                    }, 'json').fail(function(jqXHR) {
+                        callback({
+                            success: false,
+                            data: jqXHR.responseJSON?.data || 'Connection error: ' + jqXHR.status
+                        });
+                    });
+                }
+
+                $('#test-connection').on('click', function() {
+                    var protocol = $('#protocol').val(),
+                        host = $('#host').val().trim(),
+                        port = parseInt($('#port').val()),
+                        user = $('#user').val().trim(),
+                        pass = $('#pass').val().trim();
+
+                    if (!host || isNaN(port) || !user) {
                         $('#connection-status').removeClass('connection-success')
                             .addClass('connection-error')
-                            .html('Connection failed: ' + (res.data || 'Unknown error'))
+                            .html('Please fill all required connection fields')
                             .show();
-                        log('Connection test failed: ' + (res.data || 'Unknown error'), true);
+                        return;
                     }
+
+                    testConnection(protocol, host, port, user, pass, function(res) {
+                        if (res.success) {
+                            $('#connection-status').removeClass('connection-error')
+                                .addClass('connection-success')
+                                .html('Connection successful!')
+                                .show();
+                            log('Connection test successful.');
+                        } else {
+                            $('#connection-status').removeClass('connection-success')
+                                .addClass('connection-error')
+                                .html('Connection failed: ' + (res.data || 'Unknown error'))
+                                .show();
+                            log('Connection test failed: ' + (res.data || 'Unknown error'), true);
+                        }
+                    });
                 });
-            });
 
-            $('#start').on('click', function(){
-                var sel = $('input[name="files[]"]:checked'),
-                    files = sel.map(function(){ return this.value; }).get();
-                    
-                if(!files.length) {
-                    return alert('Please select at least one file to transfer.');
-                }
+                $('#start').on('click', function() {
+                    var sel = $('input[name="files[]"]:checked'),
+                        files = sel.map(function() {
+                            return this.value;
+                        }).get();
 
-                var protocol = $('#protocol').val(),
-                    host = $('#host').val().trim(),
-                    port = parseInt($('#port').val()),
-                    user = $('#user').val().trim(),
-                    pass = $('#pass').val().trim(),
-                    remote_dir = $('#remote_dir').val().trim(),
-                    chunk_size = parseInt($('#chunk_size').val()) || 8388608,
-                    max_retries = parseInt($('#max_retries').val()) || 5;
+                    if (!files.length) {
+                        return alert('Please select at least one file to transfer.');
+                    }
 
-                if (!host || isNaN(port) || !user || !remote_dir) {
-                    return alert('Please fill all required connection fields.');
-                }
+                    var protocol = $('#protocol').val(),
+                        host = $('#host').val().trim(),
+                        port = parseInt($('#port').val()),
+                        user = $('#user').val().trim(),
+                        pass = $('#pass').val().trim(),
+                        remote_dir = $('#remote_dir').val().trim(),
+                        chunk_size = parseInt($('#chunk_size').val()) || 8388608,
+                        max_retries = parseInt($('#max_retries').val()) || 5;
 
-                $('#log-area').empty().append('<div>Testing connection before starting transfer...</div>');
-                $('#progress-fill').css('width', '0');
-                $('#speed-info').text('');
+                    if (!host || isNaN(port) || !user || !remote_dir) {
+                        return alert('Please fill all required connection fields.');
+                    }
 
-                testConnection(protocol, host, port, user, pass, function(res) {
-                    if(res.success) {
-                        log('Connection successful. Starting transfer...');
-                        
-                        var totalFiles = files.length,
-                            currentFileIndex = 0,
-                            totalTransferred = 0,
-                            globalStartTime = Date.now(),
-                            currentFile = null,
-                            currentFileSize = 0,
-                            transferLock = false,
-                            transferLockTimeout = null;
+                    $('#log-area').empty().append('<div>Testing connection before starting transfer...</div>');
+                    $('#progress-fill').css('width', '0');
+                    $('#speed-info').text('');
 
-                        function updateOverallStatus() {
-                            var now = Date.now();
-                            var elapsed = (now - globalStartTime) / 1000;
-                            var overall = Math.round((currentFileIndex / totalFiles) * 100);
-                            
-                            if (elapsed > 0 && totalTransferred > 0) {
-                                var speed = (totalTransferred / 1024 / elapsed).toFixed(2);
-                                var estimatedTimeRemaining = '';
-                                
-                                if (totalTransferred > 0 && elapsed > 5) {
-                                    var bytesPerSecond = totalTransferred / elapsed;
-                                    if (bytesPerSecond > 0 && currentFile) {
-                                        var totalEstimatedBytes = 0;
-                                        for (var i = currentFileIndex; i < totalFiles; i++) {
-                                            if (i === currentFileIndex && currentFileSize > 0) {
-                                                totalEstimatedBytes += currentFileSize;
-                                            } else {
-                                                totalEstimatedBytes += currentFileSize || 10485760;
+                    testConnection(protocol, host, port, user, pass, function(res) {
+                        if (res.success) {
+                            log('Connection successful. Starting transfer...');
+
+                            var totalFiles = files.length,
+                                currentFileIndex = 0,
+                                totalTransferred = 0,
+                                globalStartTime = Date.now(),
+                                currentFile = null,
+                                currentFileSize = 0,
+                                transferLock = false,
+                                transferLockTimeout = null;
+
+                            function updateOverallStatus() {
+                                var now = Date.now();
+                                var elapsed = (now - globalStartTime) / 1000;
+                                var overall = Math.round((currentFileIndex / totalFiles) * 100);
+
+                                if (elapsed > 0 && totalTransferred > 0) {
+                                    var speed = (totalTransferred / 1024 / elapsed).toFixed(2);
+                                    var estimatedTimeRemaining = '';
+
+                                    if (totalTransferred > 0 && elapsed > 5) {
+                                        var bytesPerSecond = totalTransferred / elapsed;
+                                        if (bytesPerSecond > 0 && currentFile) {
+                                            var totalEstimatedBytes = 0;
+                                            for (var i = currentFileIndex; i < totalFiles; i++) {
+                                                if (i === currentFileIndex && currentFileSize > 0) {
+                                                    totalEstimatedBytes += currentFileSize;
+                                                } else {
+                                                    totalEstimatedBytes += currentFileSize || 10485760;
+                                                }
                                             }
+
+                                            var estimatedSeconds = totalEstimatedBytes / bytesPerSecond;
+                                            estimatedTimeRemaining = ' - Est. time remaining: ' + formatTime(estimatedSeconds);
                                         }
-                                        
-                                        var estimatedSeconds = totalEstimatedBytes / bytesPerSecond;
-                                        estimatedTimeRemaining = ' - Est. time remaining: ' + formatTime(estimatedSeconds);
+                                    }
+
+                                    $('#speed-info').html(
+                                        'Overall progress: ' + currentFileIndex + '/' + totalFiles +
+                                        ' files (' + overall + '%) at avg ' + speed + ' KB/s' +
+                                        estimatedTimeRemaining
+                                    );
+                                }
+                            }
+
+                            function checkTransferLock() {
+                                if (transferLock) {
+                                    if (!transferLockTimeout) {
+                                        transferLockTimeout = setTimeout(function() {
+                                            log('Transfer appears stuck, releasing lock...', true);
+                                            transferLock = false;
+                                            transferLockTimeout = null;
+                                            if (currentFile) {
+                                                log('Attempting to resume transfer...', true);
+                                                uploadFileChunked(currentFile);
+                                            }
+                                        }, 60000);
+                                    }
+                                } else {
+                                    if (transferLockTimeout) {
+                                        clearTimeout(transferLockTimeout);
+                                        transferLockTimeout = null;
                                     }
                                 }
-
-                                $('#speed-info').html(
-                                    'Overall progress: ' + currentFileIndex + '/' + totalFiles + 
-                                    ' files (' + overall + '%) at avg ' + speed + ' KB/s' + 
-                                    estimatedTimeRemaining
-                                );
                             }
-                        }
 
-                        function checkTransferLock() {
-                            if (transferLock) {
-                                if (!transferLockTimeout) {
-                                    transferLockTimeout = setTimeout(function() {
-                                        log('Transfer appears stuck, releasing lock...', true);
-                                        transferLock = false;
+                            function uploadFileChunked(file) {
+                                if (transferLock) {
+                                    log('Transfer already in progress, waiting...', true);
+                                    checkTransferLock();
+                                    return;
+                                }
+
+                                transferLock = true;
+                                checkTransferLock();
+
+                                currentFile = file;
+                                var chunkSize = chunk_size;
+                                var offset = 0;
+                                var startTime = Date.now();
+                                var retries = 0;
+                                var maxRetries = max_retries;
+                                var retryDelay = 3;
+                                var lastProgressUpdate = Date.now();
+
+                                log('Starting upload: ' + file);
+
+                                function uploadNextChunk() {
+                                    if (transferLockTimeout) {
+                                        clearTimeout(transferLockTimeout);
                                         transferLockTimeout = null;
-                                        if (currentFile) {
-                                            log('Attempting to resume transfer...', true);
-                                            uploadFileChunked(currentFile);
-                                        }
-                                    }, 60000);
-                                }
-                            } else {
-                                if (transferLockTimeout) {
-                                    clearTimeout(transferLockTimeout);
-                                    transferLockTimeout = null;
-                                }
-                            }
-                        }
+                                    }
+                                    checkTransferLock();
 
-                        function uploadFileChunked(file) {
-                            if (transferLock) {
-                                log('Transfer already in progress, waiting...', true);
-                                checkTransferLock();
-                                return;
-                            }
-                            
-                            transferLock = true;
-                            checkTransferLock();
-                            
-                            currentFile = file;
-                            var chunkSize = chunk_size;
-                            var offset = 0;
-                            var startTime = Date.now();
-                            var retries = 0;
-                            var maxRetries = max_retries;
-                            var retryDelay = 3;
-                            var lastProgressUpdate = Date.now();
+                                    var now = Date.now();
+                                    if (now - lastProgressUpdate > 3000) {
+                                        lastProgressUpdate = now;
+                                        var timeElapsed = (now - startTime) / 1000;
+                                        var speed = timeElapsed > 0 ? (offset / 1024 / timeElapsed).toFixed(2) : '0.00';
+                                        $('#speed-info').text('Uploading ' + file + '... at ' + speed + ' KB/s');
+                                    }
 
-                            log('Starting upload: ' + file);
+                                    $.ajax({
+                                        url: '<?php echo esc_js($ajax_url); ?>',
+                                        method: 'POST',
+                                        dataType: 'json',
+                                        timeout: 300000,
+                                        data: {
+                                            action: 'transfer_file_chunk',
+                                            nonce: '<?php echo esc_js($nonce); ?>',
+                                            protocol: protocol,
+                                            host: host,
+                                            port: port,
+                                            user: user,
+                                            pass: pass,
+                                            remote_dir: remote_dir,
+                                            file: file,
+                                            offset: offset,
+                                            chunk_size: chunkSize,
+                                            max_retries: maxRetries
+                                        },
+                                        success: function(res) {
+                                            if (res.success) {
+                                                var chunkSize = res.data.new_offset - offset;
+                                                offset = res.data.new_offset;
+                                                totalTransferred += chunkSize;
+                                                currentFileSize = res.data.filesize;
 
-                            function uploadNextChunk() {
-                                if (transferLockTimeout) {
-                                    clearTimeout(transferLockTimeout);
-                                    transferLockTimeout = null;
-                                }
-                                checkTransferLock();
-                                
-                                var now = Date.now();
-                                if (now - lastProgressUpdate > 3000) {
-                                    lastProgressUpdate = now;
-                                    var timeElapsed = (now - startTime) / 1000;
-                                    var speed = timeElapsed > 0 ? (offset / 1024 / timeElapsed).toFixed(2) : '0.00';
-                                    $('#speed-info').text('Uploading ' + file + '... at ' + speed + ' KB/s');
-                                }
+                                                var percent = Math.min(100, Math.round((offset / res.data.filesize) * 100));
+                                                var now = Date.now();
+                                                var timeElapsed = (now - startTime) / 1000;
+                                                var speed = (offset / 1024 / timeElapsed).toFixed(2);
+                                                var remainingBytes = res.data.filesize - offset;
+                                                var estimatedTimeRemaining = remainingBytes > 0 && offset > 0 ?
+                                                    formatTime(remainingBytes / (offset / timeElapsed)) : '';
 
-                                $.ajax({
-                                    url: '<?php echo esc_js($ajax_url); ?>',
-                                    method: 'POST',
-                                    dataType: 'json',
-                                    timeout: 300000,
-                                    data: {
-                                        action: 'transfer_file_chunk',
-                                        nonce: '<?php echo esc_js($nonce); ?>',
-                                        protocol: protocol,
-                                        host: host,
-                                        port: port,
-                                        user: user,
-                                        pass: pass,
-                                        remote_dir: remote_dir,
-                                        file: file,
-                                        offset: offset,
-                                        chunk_size: chunkSize,
-                                        max_retries: maxRetries
-                                    },
-                                    success: function(res) {
-                                        if (res.success) {
-                                            var chunkSize = res.data.new_offset - offset;
-                                            offset = res.data.new_offset;
-                                            totalTransferred += chunkSize;
-                                            currentFileSize = res.data.filesize;
-                                            
-                                            var percent = Math.min(100, Math.round((offset / res.data.filesize) * 100));
-                                            var now = Date.now();
-                                            var timeElapsed = (now - startTime) / 1000;
-                                            var speed = (offset / 1024 / timeElapsed).toFixed(2);
-                                            var remainingBytes = res.data.filesize - offset;
-                                            var estimatedTimeRemaining = remainingBytes > 0 && offset > 0 ? 
-                                                formatTime(remainingBytes / (offset / timeElapsed)) : '';
+                                                $('#progress-fill').css('width', percent + '%');
+                                                $('#speed-info').html(
+                                                    'Uploading ' + file + ': ' + percent + '% at ' + speed + ' KB/s' +
+                                                    (estimatedTimeRemaining ? ' - ETA: ' + estimatedTimeRemaining : '') +
+                                                    '<br>Transferred: ' + formatFileSize(offset) + ' of ' + formatFileSize(res.data.filesize)
+                                                );
+                                                lastProgressUpdate = now;
 
-                                            $('#progress-fill').css('width', percent + '%');
-                                            $('#speed-info').html(
-                                                'Uploading ' + file + ': ' + percent + '% at ' + speed + ' KB/s' +
-                                                (estimatedTimeRemaining ? ' - ETA: ' + estimatedTimeRemaining : '') +
-                                                '<br>Transferred: ' + formatFileSize(offset) + ' of ' + formatFileSize(res.data.filesize)
-                                            );
-                                            lastProgressUpdate = now;
-
-                                            if (offset < res.data.filesize) {
-                                                uploadNextChunk();
-                                            } else {
-                                                log(file + ' uploaded successfully (' + formatFileSize(res.data.filesize) + ' in ' + 
-                                                    timeElapsed.toFixed(1) + 's at ' + speed + ' KB/s)');
-                                                currentFileIndex++;
-                                                updateOverallStatus();
-                                                transferLock = false;
-                                                
-                                                if (transferLockTimeout) {
-                                                    clearTimeout(transferLockTimeout);
-                                                    transferLockTimeout = null;
-                                                }
-                                                
-                                                if (currentFileIndex < totalFiles) {
-                                                    setTimeout(function() {
-                                                        uploadFileChunked(files[currentFileIndex]);
-                                                    }, 500);
+                                                if (offset < res.data.filesize) {
+                                                    uploadNextChunk();
                                                 } else {
-                                                    var totalTime = (Date.now() - globalStartTime) / 1000;
-                                                    log('All files transferred successfully in ' + formatTime(totalTime) + '!');
+                                                    log(file + ' uploaded successfully (' + formatFileSize(res.data.filesize) + ' in ' +
+                                                        timeElapsed.toFixed(1) + 's at ' + speed + ' KB/s)');
+                                                    currentFileIndex++;
+                                                    updateOverallStatus();
+                                                    transferLock = false;
+
+                                                    if (transferLockTimeout) {
+                                                        clearTimeout(transferLockTimeout);
+                                                        transferLockTimeout = null;
+                                                    }
+
+                                                    if (currentFileIndex < totalFiles) {
+                                                        setTimeout(function() {
+                                                            uploadFileChunked(files[currentFileIndex]);
+                                                        }, 500);
+                                                    } else {
+                                                        var totalTime = (Date.now() - globalStartTime) / 1000;
+                                                        log('All files transferred successfully in ' + formatTime(totalTime) + '!');
+                                                    }
+                                                }
+                                                retries = 0;
+                                            } else {
+                                                log('Error uploading ' + file + ': ' + (res.data?.message || res.data), true);
+                                                if (retries < maxRetries) {
+                                                    retries++;
+                                                    log('Retry ' + retries + '/' + maxRetries + ' in ' + retryDelay + 's...', true);
+                                                    setTimeout(uploadNextChunk, retryDelay * 1000);
+                                                } else {
+                                                    log('Failed to upload ' + file + ' after ' + maxRetries + ' retries. Moving to next file.', true);
+                                                    currentFileIndex++;
+                                                    updateOverallStatus();
+                                                    transferLock = false;
+
+                                                    if (transferLockTimeout) {
+                                                        clearTimeout(transferLockTimeout);
+                                                        transferLockTimeout = null;
+                                                    }
+
+                                                    if (currentFileIndex < totalFiles) {
+                                                        setTimeout(function() {
+                                                            uploadFileChunked(files[currentFileIndex]);
+                                                        }, 1000);
+                                                    } else {
+                                                        log('Transfer completed with errors.');
+                                                    }
                                                 }
                                             }
-                                            retries = 0;
-                                        } else {
-                                            log('Error uploading ' + file + ': ' + (res.data?.message || res.data), true);
+                                        },
+                                        error: function(jqXHR, textStatus, errorThrown) {
+                                            var msg = "HTTP Error: ";
+                                            if (jqXHR.status === 0) msg += "Connection Failed";
+                                            else if (jqXHR.status === 500) msg += "Server Error: " + (jqXHR.responseJSON?.message || '');
+                                            else if (textStatus === "timeout") msg += "Request Timeout - File may be too large for single chunk";
+                                            else msg += jqXHR.status + " " + errorThrown;
+
+                                            log(msg, true);
                                             if (retries < maxRetries) {
                                                 retries++;
+                                                if (textStatus === "timeout" && chunkSize > 4194304) {
+                                                    chunkSize = Math.floor(chunkSize / 2);
+                                                    log('Reducing chunk size to ' + formatFileSize(chunkSize) + ' for better stability', true);
+                                                }
+
                                                 log('Retry ' + retries + '/' + maxRetries + ' in ' + retryDelay + 's...', true);
                                                 setTimeout(uploadNextChunk, retryDelay * 1000);
                                             } else {
@@ -607,12 +683,12 @@ class FTP_SFTP_File_Transfer_Plugin {
                                                 currentFileIndex++;
                                                 updateOverallStatus();
                                                 transferLock = false;
-                                                
+
                                                 if (transferLockTimeout) {
                                                     clearTimeout(transferLockTimeout);
                                                     transferLockTimeout = null;
                                                 }
-                                                
+
                                                 if (currentFileIndex < totalFiles) {
                                                     setTimeout(function() {
                                                         uploadFileChunked(files[currentFileIndex]);
@@ -622,125 +698,88 @@ class FTP_SFTP_File_Transfer_Plugin {
                                                 }
                                             }
                                         }
-                                    },
-                                    error: function(jqXHR, textStatus, errorThrown) {
-                                        var msg = "HTTP Error: ";
-                                        if (jqXHR.status === 0) msg += "Connection Failed";
-                                        else if (jqXHR.status === 500) msg += "Server Error: " + (jqXHR.responseJSON?.message || '');
-                                        else if (textStatus === "timeout") msg += "Request Timeout - File may be too large for single chunk";
-                                        else msg += jqXHR.status + " " + errorThrown;
+                                    });
+                                }
 
-                                        log(msg, true);
-                                        if (retries < maxRetries) {
-                                            retries++;
-                                            if (textStatus === "timeout" && chunkSize > 4194304) {
-                                                chunkSize = Math.floor(chunkSize / 2);
-                                                log('Reducing chunk size to ' + formatFileSize(chunkSize) + ' for better stability', true);
-                                            }
-                                            
-                                            log('Retry ' + retries + '/' + maxRetries + ' in ' + retryDelay + 's...', true);
-                                            setTimeout(uploadNextChunk, retryDelay * 1000);
-                                        } else {
-                                            log('Failed to upload ' + file + ' after ' + maxRetries + ' retries. Moving to next file.', true);
-                                            currentFileIndex++;
-                                            updateOverallStatus();
-                                            transferLock = false;
-                                            
-                                            if (transferLockTimeout) {
-                                                clearTimeout(transferLockTimeout);
-                                                transferLockTimeout = null;
-                                            }
-                                            
-                                            if (currentFileIndex < totalFiles) {
-                                                setTimeout(function() {
-                                                    uploadFileChunked(files[currentFileIndex]);
-                                                }, 1000);
-                                            } else {
-                                                log('Transfer completed with errors.');
-                                            }
-                                        }
-                                    }
-                                });
+                                uploadNextChunk();
                             }
 
-                            uploadNextChunk();
+                            uploadFileChunked(files[currentFileIndex]);
+                        } else {
+                            log('Connection test failed. Transfer aborted.', true);
                         }
-
-                        uploadFileChunked(files[currentFileIndex]);
-                    } else {
-                        log('Connection test failed. Transfer aborted.', true);
-                    }
+                    });
                 });
-            });
 
-            $('#save-ftp').on('click', function() {
-                var connData = {
-                    protocol: $('#protocol').val(),
-                    host: $('#host').val().trim(),
-                    port: parseInt($('#port').val()),
-                    user: $('#user').val().trim(),
-                    pass: $('#pass').val().trim(),
-                    remote_dir: $('#remote_dir').val().trim(),
-                    chunk_size: parseInt($('#chunk_size').val()) || 8388608,
-                    max_retries: parseInt($('#max_retries').val()) || 5
-                };
-                
-                $.post('<?php echo esc_js($ajax_url); ?>', {
-                    action: 'save_ftp_conn',
-                    nonce: '<?php echo esc_js($conn_nonce); ?>',
-                    data: connData
-                }, function(res) {
-                    if (res.success) {
-                        log('Connection settings saved.');
-                    } else {
-                        log('Error saving settings: ' + res.data, true);
-                    }
-                }, 'json');
-            });
+                $('#save-ftp').on('click', function() {
+                    var connData = {
+                        protocol: $('#protocol').val(),
+                        host: $('#host').val().trim(),
+                        port: parseInt($('#port').val()),
+                        user: $('#user').val().trim(),
+                        pass: $('#pass').val().trim(),
+                        remote_dir: $('#remote_dir').val().trim(),
+                        chunk_size: parseInt($('#chunk_size').val()) || 8388608,
+                        max_retries: parseInt($('#max_retries').val()) || 5
+                    };
 
-            $.post('<?php echo esc_js($ajax_url); ?>', {
-                action: 'load_ftp_conn',
-                nonce: '<?php echo esc_js($conn_nonce); ?>'
-            }, function(res) {
-                if (res.success && res.data) {
-                    $('#protocol').val(res.data.protocol || 'sftp');
-                    $('#host').val(res.data.host || '');
-                    $('#port').val(res.data.port || (res.data.protocol === 'ftp' ? 21 : 22));
-                    $('#user').val(res.data.user || '');
-                    $('#pass').val(res.data.pass || '');
-                    $('#remote_dir').val(res.data.remote_dir || '');
-                    $('#chunk_size').val(res.data.chunk_size || 8388608);
-                    $('#max_retries').val(res.data.max_retries || 5);
-                    log('Loaded saved connection settings.');
-                }
-            }, 'json');
-
-            $('#reset-ftp').on('click', function() {
-                if (confirm('Are you sure you want to reset all connection settings?')) {
                     $.post('<?php echo esc_js($ajax_url); ?>', {
-                        action: 'reset_ftp_conn',
-                        nonce: '<?php echo esc_js($conn_nonce); ?>'
+                        action: 'save_ftp_conn',
+                        nonce: '<?php echo esc_js($conn_nonce); ?>',
+                        data: connData
                     }, function(res) {
                         if (res.success) {
-                            $('#protocol').val('sftp');
-                            $('#host').val('');
-                            $('#port').val(22);
-                            $('#user').val('');
-                            $('#pass').val('');
-                            $('#remote_dir').val('');
-                            $('#chunk_size').val(8388608);
-                            $('#max_retries').val(5);
-                            log('Connection settings reset.');
+                            log('Connection settings saved.');
+                        } else {
+                            log('Error saving settings: ' + res.data, true);
                         }
                     }, 'json');
-                }
-            });
-        })(jQuery);
+                });
+
+                $.post('<?php echo esc_js($ajax_url); ?>', {
+                    action: 'load_ftp_conn',
+                    nonce: '<?php echo esc_js($conn_nonce); ?>'
+                }, function(res) {
+                    if (res.success && res.data) {
+                        $('#protocol').val(res.data.protocol || 'sftp');
+                        $('#host').val(res.data.host || '');
+                        $('#port').val(res.data.port || (res.data.protocol === 'ftp' ? 21 : 22));
+                        $('#user').val(res.data.user || '');
+                        $('#pass').val(res.data.pass || '');
+                        $('#remote_dir').val(res.data.remote_dir || '');
+                        $('#chunk_size').val(res.data.chunk_size || 8388608);
+                        $('#max_retries').val(res.data.max_retries || 5);
+                        log('Loaded saved connection settings.');
+                    }
+                }, 'json');
+
+                $('#reset-ftp').on('click', function() {
+                    if (confirm('Are you sure you want to reset all connection settings?')) {
+                        $.post('<?php echo esc_js($ajax_url); ?>', {
+                            action: 'reset_ftp_conn',
+                            nonce: '<?php echo esc_js($conn_nonce); ?>'
+                        }, function(res) {
+                            if (res.success) {
+                                $('#protocol').val('sftp');
+                                $('#host').val('');
+                                $('#port').val(22);
+                                $('#user').val('');
+                                $('#pass').val('');
+                                $('#remote_dir').val('');
+                                $('#chunk_size').val(8388608);
+                                $('#max_retries').val(5);
+                                log('Connection settings reset.');
+                            }
+                        }, 'json');
+                    }
+                });
+            })(jQuery);
         </script>
-        <?php
+<?php
     }
 
-    public function ajax_transfer_file_chunk() {
+    public function ajax_transfer_file_chunk()
+    {
         if (!wp_verify_nonce($_POST['nonce'] ?? '', 'transfer_nonce')) {
             wp_send_json_error(['message' => 'Invalid nonce']);
         }
@@ -796,7 +835,7 @@ class FTP_SFTP_File_Transfer_Plugin {
 
                 $fp = fopen($local_path, 'rb');
                 fseek($fp, $offset);
-                
+
                 $bytesToSend = $new_offset - $offset;
                 $sent = 0;
                 $subChunkSize = 524288; // 512KB sub-chunks
@@ -806,7 +845,7 @@ class FTP_SFTP_File_Transfer_Plugin {
                 try {
                     while ($sent < $bytesToSend && $retryCount < $maxRetries) {
                         $data = fread($fp, min($subChunkSize, $bytesToSend - $sent));
-                        
+
                         if ($data === false || strlen($data) === 0) {
                             throw new Exception('Failed to read from local file');
                         }
@@ -819,16 +858,16 @@ class FTP_SFTP_File_Transfer_Plugin {
                             $stat = $sftp->stat($remote_path);
                             $remoteSize = $stat ? $stat['size'] : 0;
                             $expectedSize = $offset + $sent + strlen($data);
-                            
+
                             if ($remoteSize !== $expectedSize) {
                                 throw new Exception("Size mismatch: Local {$expectedSize} vs Remote {$remoteSize}");
                             }
-                            
+
                             $retryCount++;
                             usleep(pow(2, $retryCount) * 100000);
                             continue;
                         }
-                        
+
                         $sent += strlen($data);
                         $retryCount = 0;
                     }
@@ -856,7 +895,7 @@ class FTP_SFTP_File_Transfer_Plugin {
 
                 $fp = fopen($local_path, 'rb');
                 fseek($fp, $offset);
-                
+
                 if (!$ftp->fput($remote_path, $fp, FTP_BINARY, $offset)) {
                     fclose($fp);
                     throw new Exception('Failed to upload chunk via FTP');
@@ -880,7 +919,8 @@ class FTP_SFTP_File_Transfer_Plugin {
         }
     }
 
-    public function ajax_test_ftp_conn() {
+    public function ajax_test_ftp_conn()
+    {
         if (!wp_verify_nonce($_POST['nonce'] ?? '', 'transfer_nonce')) {
             wp_send_json_error(['message' => 'Invalid nonce']);
         }
@@ -924,7 +964,8 @@ class FTP_SFTP_File_Transfer_Plugin {
         }
     }
 
-    public function ajax_save_ftp_conn() {
+    public function ajax_save_ftp_conn()
+    {
         if (!wp_verify_nonce($_POST['nonce'] ?? '', 'ftp_conn_nonce')) {
             wp_send_json_error(['message' => 'Invalid nonce']);
         }
@@ -953,7 +994,7 @@ class FTP_SFTP_File_Transfer_Plugin {
         }
 
         $result = update_option('ftp_sftp_transfer_settings', $data, false);
-        
+
         if ($result) {
             wp_send_json_success(['message' => 'Settings saved successfully']);
         } else {
@@ -961,7 +1002,8 @@ class FTP_SFTP_File_Transfer_Plugin {
         }
     }
 
-    public function ajax_load_ftp_conn() {
+    public function ajax_load_ftp_conn()
+    {
         if (!wp_verify_nonce($_POST['nonce'] ?? '', 'ftp_conn_nonce')) {
             wp_send_json_error(['message' => 'Invalid nonce']);
         }
@@ -974,7 +1016,8 @@ class FTP_SFTP_File_Transfer_Plugin {
         wp_send_json_success(['data' => $settings]);
     }
 
-    public function ajax_reset_ftp_conn() {
+    public function ajax_reset_ftp_conn()
+    {
         if (!wp_verify_nonce($_POST['nonce'] ?? '', 'ftp_conn_nonce')) {
             wp_send_json_error(['message' => 'Invalid nonce']);
         }
