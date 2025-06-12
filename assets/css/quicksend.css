@@ -1,0 +1,69 @@
+/* Main container styles */
+.wrap {
+    max-width: 1200px;
+    margin: 20px auto;
+    padding: 0 20px;
+}
+
+/* Form styles */
+.form-table th {
+    width: 200px;
+}
+
+.form-table td {
+    padding: 15px 10px;
+}
+
+/* Button styles */
+.connection-actions {
+    margin: 20px 0;
+    padding: 15px;
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+}
+
+.connection-actions button {
+    margin-right: 10px;
+}
+
+/* Table styles */
+.widefat {
+    border-collapse: collapse;
+    margin: 0;
+    width: 100%;
+}
+
+.widefat th {
+    background: #f8f9fa;
+    padding: 8px;
+    text-align: left;
+}
+
+.widefat td {
+    padding: 8px;
+    border-bottom: 1px solid #dee2e6;
+}
+
+/* Search box styles */
+#file-search {
+    padding: 8px;
+    margin: 10px 0;
+    width: 100%;
+    max-width: 300px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+/* Advanced settings panel */
+.file-settings {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 20px;
+    margin-top: 20px;
+}
+
+.file-settings h3 {
+    margin-top: 0;
+}
